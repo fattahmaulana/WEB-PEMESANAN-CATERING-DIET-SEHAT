@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  PELANGGAN
+}
+
+enum StatusPesanan {
+  MENUNGGU
+  DIPROSES
+  DIKIRIM
+}
+
+enum JenisKelamin {
+  L
+  P
+}
+
+enum LevelAktivitas {
+  RINGAN
+  SEDANG
+  BERAT
+}
+
+enum TujuanDiet {
+  PENURUNAN_BERAT_BADAN
+  PEMELIHARAAN
+  PENINGKATAN_MASSA_OTOT
+  VEGETARIAN
+}
+
+model Pengguna {
+  id             String           @id @default(uuid())
+  nama           String
+  email          String           @unique
+  password       String
+  role           Role             @default(PELANGGAN)
+  profilKesehatan ProfilKesehatan?
+  pesanan        Pesanan[]
+}
+
+model ProfilKesehatan {
+  id             String         @id @default(uuid())
+  idPengguna     String         @unique
+  pengguna       Pengguna       @relation(fields: [idPengguna], references: [id])
+  usia           Int
+  gender         JenisKelamin
+  beratBadan     Float
+  tinggiBadan    Float
+  levelAktivitas LevelAktivitas
+  tujuanDiet     TujuanDiet
+  targetKalori   Float?
+}
+
+model MenuDiet {
+  id           String         @id @default(uuid())
+  namaPaket    String
+  deskripsi    String
+  totalKalori  Int
+  protein      Float
+  karbohidrat  Float
+  lemak        Float
+  harga        Float
+  fotoMakanan  String
+  kategori     String
+  aturanPakar  AturanPakar[]
+  pesanan      Pesanan[]
+}
+
+model AturanPakar {
+  id          String     @id @default(uuid())
+  minKalori   Float
+  maxKalori   Float
+  tujuanDiet  TujuanDiet
+  idMenu      String
+  menuDiet    MenuDiet   @relation(fields: [idMenu], references: [id])
+}
+
+model Pesanan {
+  id                 String        @id @default(uuid())
+  idPengguna         String
+  pengguna           Pengguna      @relation(fields: [idPengguna], references: [id])
+  idMenu             String
+  menuDiet           MenuDiet      @relation(fields: [idMenu], references: [id])
+  tanggalPengiriman  DateTime
+  statusPesanan      StatusPesanan @default(MENUNGGU)
+  createdAt          DateTime      @default(now())
+}

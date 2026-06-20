@@ -1,0 +1,6 @@
+{
+  "name": "Kian Cinta Kudus Catering",
+  "description": "Sistem Informasi Pemesanan Catering Diet Sehat dengan Sistem Pakar Forward Chaining",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
