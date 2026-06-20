@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore, MenuDiet } from '../lib/store';
 import { Navigate } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
 
 export default function AdminDashboard() {
   const { penggunaAktif, pesanan, menuDiet, perbaruiStatusPesanan, tambahMenu, perbaruiMenu, hapusMenu, fetchPesanan } = useStore();
@@ -8,7 +9,9 @@ export default function AdminDashboard() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   // Menu form state
   const [namaPaket, setNamaPaket] = useState('');
   const [deskripsi, setDeskripsi] = useState('');
@@ -17,14 +20,18 @@ export default function AdminDashboard() {
   const [karbohidrat, setKarbohidrat] = useState(0);
   const [lemak, setLemak] = useState(0);
   const [harga, setHarga] = useState(0);
-  const [fotoMakanan, setFotoMakanan] = useState('');
   const [kategori, setKategori] = useState('');
   const [kategoriKodel, setKategoriKodel] = useState('P01');
 
+  // Image state: either a File object (new upload) or a URL string (existing)
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string>('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Redirect non-admin
   if (!penggunaAktif || penggunaAktif.role !== 'ADMIN') {
     return <Navigate to="/login" replace />;
   }
-  const handleEditMenu = (menu: MenuDiet) => {
 
   // Fetch pesanan when component mounts or user changes
   useEffect(() => {
@@ -33,6 +40,51 @@ export default function AdminDashboard() {
     }
   }, [penggunaAktif]);
 
+  // Upload a File directly to Supabase Storage and return the public URL
+  const uploadImageFile = async (file: File): Promise<string> => {
+    const ext = file.name.split('.').pop() || 'jpg';
+    const filePath = `${Date.now()}_menu.${ext}`;
+
+    const { error } = await supabase.storage
+      .from('menu-images')
+      .upload(filePath, file, { contentType: file.type, upsert: false });
+
+    if (error) throw new Error(`Upload gambar gagal: ${error.message}`);
+
+    const { data: urlData } = supabase.storage
+      .from('menu-images')
+      .getPublicUrl(filePath);
+
+    return urlData.publicUrl;
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        alert('Hanya file gambar yang diperbolehkan (JPG, PNG, WebP, dll).');
+        return;
+      }
+      // Validate file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        alert('Ukuran file maksimal 5MB.');
+        return;
+      }
+      setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
+    }
+  };
+
+  const clearImage = () => {
+    setImageFile(null);
+    setImagePreview('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleEditMenu = (menu: MenuDiet) => {
     setEditingId(menu.id);
     setNamaPaket(menu.namaPaket);
     setDeskripsi(menu.deskripsi);
@@ -41,28 +93,44 @@ export default function AdminDashboard() {
     setKarbohidrat(menu.karbohidrat);
     setLemak(menu.lemak);
     setHarga(menu.harga);
-    setFotoMakanan(menu.fotoMakanan);
     setKategori(menu.kategori);
     setKategoriKodel(menu.kategoriKodel);
+    // For editing, show existing image as preview
+    setImageFile(null);
+    setImagePreview(menu.fotoMakanan || '');
     setShowForm(true);
   };
 
   const resetForm = () => {
     setEditingId(null);
-    setNamaPaket(''); setDeskripsi(''); setTotalKalori(0); setProtein(0); setKarbohidrat(0); setLemak(0); setHarga(0); setFotoMakanan(''); setKategori(''); setKategoriKodel('P01');
+    setNamaPaket(''); setDeskripsi(''); setTotalKalori(0); setProtein(0);
+    setKarbohidrat(0); setLemak(0); setHarga(0); setKategori(''); setKategoriKodel('P01');
+    clearImage();
     setShowForm(false);
   };
 
   const handleSaveMenu = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fotoMakanan) {
-      alert('Harap unggah file gambar atau masukkan URL gambar terlebih dahulu.');
+
+    // For new menu, image is required. For editing, existing image is ok.
+    if (!imageFile && !imagePreview) {
+      alert('Harap pilih file gambar terlebih dahulu.');
       return;
     }
-    const data = {
-      namaPaket, deskripsi, totalKalori, protein, karbohidrat, lemak, harga, fotoMakanan, kategori, kategoriKodel
-    };
+
+    setSaving(true);
     try {
+      // Upload new image file if selected
+      let fotoUrl = imagePreview; // default to existing URL (for edit)
+      if (imageFile) {
+        fotoUrl = await uploadImageFile(imageFile);
+      }
+
+      const data = {
+        namaPaket, deskripsi, totalKalori, protein, karbohidrat, lemak, harga,
+        fotoMakanan: fotoUrl, kategori, kategoriKodel
+      };
+
       if (editingId) {
         await perbaruiMenu(editingId, data);
       } else {
@@ -71,6 +139,20 @@ export default function AdminDashboard() {
       resetForm();
     } catch (err: any) {
       alert(err.message || 'Gagal menyimpan menu.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteMenu = async (id: string) => {
+    if (!confirm('Yakin hapus menu ini?')) return;
+    setDeleting(id);
+    try {
+      await hapusMenu(id);
+    } catch (err: any) {
+      alert(err.message || 'Gagal menghapus menu.');
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -192,21 +274,36 @@ export default function AdminDashboard() {
                   </button>
                 </div>
                 <div className="grid gap-4">
-                  {menuDiet.map(menu => (
-                    <div key={menu.id} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <img src={menu.fotoMakanan || 'https://via.placeholder.com/150'} alt={menu.namaPaket} className="w-16 h-16 rounded object-cover" />
-                        <div>
-                          <h4 className="font-bold text-white">{menu.namaPaket}</h4>
-                          <p className="text-xs text-zinc-500 font-mono mt-1">{menu.kategori} ({menu.kategoriKodel}) • {menu.totalKalori} Kkal • Rp {menu.harga.toLocaleString('id-ID')}</p>
+                  {menuDiet.length === 0 ? (
+                    <div className="text-center py-12 text-zinc-500 font-mono text-sm">Belum ada menu. Klik "+ Tambah Menu" untuk memulai.</div>
+                  ) : (
+                    menuDiet.map(menu => (
+                      <div key={menu.id} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <img 
+                            src={menu.fotoMakanan || 'https://via.placeholder.com/150?text=No+Image'} 
+                            alt={menu.namaPaket} 
+                            className="w-16 h-16 rounded object-cover border border-zinc-800" 
+                            onError={(e) => { (e.target as HTMLImageElement).src = 'https://via.placeholder.com/150?text=Error'; }}
+                          />
+                          <div>
+                            <h4 className="font-bold text-white">{menu.namaPaket}</h4>
+                            <p className="text-xs text-zinc-500 font-mono mt-1">{menu.kategori} ({menu.kategoriKodel}) • {menu.totalKalori} Kkal • Rp {menu.harga.toLocaleString('id-ID')}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={() => handleEditMenu(menu)} className="text-xs bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded transition-colors font-mono">Edit</button>
+                          <button 
+                            onClick={() => handleDeleteMenu(menu.id)} 
+                            disabled={deleting === menu.id}
+                            className="text-xs bg-red-500/10 hover:bg-red-500/20 text-red-500 px-3 py-1.5 rounded transition-colors font-mono disabled:opacity-50"
+                          >
+                            {deleting === menu.id ? 'Menghapus...' : 'Hapus'}
+                          </button>
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => handleEditMenu(menu)} className="text-xs bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded transition-colors font-mono">Edit</button>
-                        <button onClick={async () => { if(confirm('Yakin hapus menu ini?')) { try { await hapusMenu(menu.id); } catch(err: any) { alert(err.message); } } }} className="text-xs bg-red-500/10 hover:bg-red-500/20 text-red-500 px-3 py-1.5 rounded transition-colors font-mono">Hapus</button>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
             ) : (
@@ -265,72 +362,74 @@ export default function AdminDashboard() {
                     </div>
                   </div>
 
+                  {/* File Upload Section */}
                   <div className="space-y-1">
                     <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Foto Makanan</label>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {/* Left: Image Preview */}
-                      <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-4 flex flex-col items-center justify-center min-h-[140px] relative">
-                        {fotoMakanan ? (
+                      <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-4 flex flex-col items-center justify-center min-h-[160px] relative">
+                        {imagePreview ? (
                           <div className="relative w-full h-full flex flex-col items-center justify-center">
-                            <img src={fotoMakanan} alt="Preview" className="max-h-[100px] rounded object-cover mb-2 border border-zinc-800" />
-                            <button 
-                              type="button" 
-                              onClick={() => setFotoMakanan('')} 
-                              className="text-[10px] font-mono bg-red-500/10 hover:bg-red-500/20 text-red-500 px-2 py-1 rounded transition-colors"
-                            >
-                              Hapus Gambar
-                            </button>
+                            <img src={imagePreview} alt="Preview" className="max-h-[120px] rounded object-cover mb-3 border border-zinc-800" />
+                            <div className="flex items-center gap-2">
+                              {imageFile && (
+                                <span className="text-[10px] font-mono text-zinc-500 max-w-[150px] truncate">{imageFile.name}</span>
+                              )}
+                              <button 
+                                type="button" 
+                                onClick={clearImage} 
+                                className="text-[10px] font-mono bg-red-500/10 hover:bg-red-500/20 text-red-500 px-2 py-1 rounded transition-colors"
+                              >
+                                Hapus Gambar
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="text-center p-4">
-                            <svg className="mx-auto h-8 w-8 text-zinc-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                            <svg className="mx-auto h-10 w-10 text-zinc-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                             </svg>
                             <p className="text-zinc-600 text-xs font-mono">Belum ada gambar</p>
                           </div>
                         )}
                       </div>
                       
-                      {/* Right: Upload File or Paste URL */}
+                      {/* Right: File Upload Button */}
                       <div className="flex flex-col justify-center space-y-3">
-                        <div className="space-y-1">
-                          <label className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">Unggah dari Komputer</label>
-                          <label className="w-full h-10 border border-zinc-800 hover:border-lime-400 hover:text-lime-400 text-zinc-400 transition-colors rounded flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider cursor-pointer bg-zinc-950">
-                            Pilih File Gambar
+                        <div className="space-y-2">
+                          <label className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">Pilih Gambar dari Komputer</label>
+                          <label className="w-full h-12 border-2 border-dashed border-zinc-700 hover:border-lime-400 hover:text-lime-400 text-zinc-400 transition-colors rounded-lg flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider cursor-pointer bg-zinc-950/50">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                            {imagePreview ? 'Ganti File Gambar' : 'Pilih File Gambar'}
                             <input 
+                              ref={fileInputRef}
                               type="file" 
-                              accept="image/*" 
+                              accept="image/jpeg,image/png,image/webp,image/gif" 
                               className="hidden" 
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) {
-                                  const reader = new FileReader();
-                                  reader.onloadend = () => {
-                                    setFotoMakanan(reader.result as string);
-                                  };
-                                  reader.readAsDataURL(file);
-                                }
-                              }} 
+                              onChange={handleFileSelect}
                             />
                           </label>
-                        </div>
-                        
-                        <div className="space-y-1">
-                          <label className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">Atau Tempel URL Gambar</label>
-                          <input 
-                            placeholder="https://images.unsplash.com/..." 
-                            value={fotoMakanan.startsWith('data:') ? '' : fotoMakanan} 
-                            onChange={e=>setFotoMakanan(e.target.value)} 
-                            className="w-full bg-zinc-950 border border-zinc-800 p-2.5 rounded text-white text-xs outline-none focus:border-lime-400" 
-                          />
+                          <p className="text-[9px] font-mono text-zinc-600">Format: JPG, PNG, WebP, GIF • Maks: 5MB</p>
                         </div>
                       </div>
                     </div>
                   </div>
 
                   <div className="flex gap-2 mt-6">
-                    <button type="submit" className="bg-lime-400 hover:bg-lime-300 text-zinc-950 px-4 py-2 font-bold uppercase tracking-wider text-xs rounded transition-colors">
-                      Simpan Menu
+                    <button 
+                      type="submit" 
+                      disabled={saving}
+                      className="bg-lime-400 hover:bg-lime-300 text-zinc-950 px-4 py-2 font-bold uppercase tracking-wider text-xs rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {saving && (
+                        <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                      )}
+                      {saving ? 'Menyimpan...' : 'Simpan Menu'}
                     </button>
                     <button type="button" onClick={resetForm} className="bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-2 font-bold uppercase tracking-wider text-xs rounded transition-colors">
                       Batal
@@ -355,13 +454,12 @@ export default function AdminDashboard() {
             </button>
             <h3 className="text-xl font-display font-medium text-white mb-6">Bukti Pembayaran</h3>
             <div className="flex justify-center">
-              {selectedImage.startsWith('data:') ? (
-                <img src={selectedImage} alt="Bukti Transfer" className="max-h-[60vh] rounded-lg border border-zinc-800 object-contain" />
-              ) : (
-                <div className="text-zinc-500 font-mono text-sm break-all">
-                  (Simulasi File) {selectedImage}
-                </div>
-              )}
+              <img 
+                src={selectedImage} 
+                alt="Bukti Transfer" 
+                className="max-h-[60vh] rounded-lg border border-zinc-800 object-contain" 
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
             </div>
             <div className="mt-8 flex justify-end">
               <button onClick={() => setSelectedImage(null)} className="w-full sm:w-auto h-12 bg-lime-400 hover:bg-lime-300 text-zinc-950 font-bold uppercase tracking-wider transition-colors rounded-lg px-8">
